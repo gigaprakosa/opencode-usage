@@ -279,14 +279,23 @@ class PricingEngine:
     def cost(self, provider: str, model: str, tok: dict):
         """USD cost for one usage record. Returns (usd, priced_bool).
 
-            (input*in + output*out + cache_read*cr + cache_write*cw) / 1e6
+        Matches opencode's native formula
+        (``packages/opencode/src/session/session.ts``):
+
+            (input*in + output*out + reasoning*out
+             + cache_read*cr + cache_write*cw) / 1e6
+
+        Reasoning tokens are charged at the output rate because models.dev
+        has no dedicated reasoning rate yet (upstream TODO in opencode source).
         """
         rate = self._rate(provider, model)
         if rate is None:
             return 0.0, False
+        out_rate = rate.get("output") or 0
         usd = (
             tok["input"] * (rate.get("input") or 0)
-            + tok["output"] * (rate.get("output") or 0)
+            + tok["output"] * out_rate
+            + tok["reasoning"] * out_rate  # opencode: reasoning priced as output
             + tok["cache_read"] * (rate.get("cache_read") or 0)
             + tok["cache_write"] * (rate.get("cache_write") or 0)
         ) / 1_000_000
