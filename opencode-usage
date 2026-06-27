@@ -194,6 +194,9 @@ class PricingEngine:
     def __init__(self):
         self.stale = False  # True when we fell back to the on-disk cache
         self.data = self._load()
+        # True when there is no pricing data at all (live fetch failed AND no
+        # usable cache). Cost cannot be computed in this state.
+        self.empty = not bool(self.data)
         self._by_model = self._index_real_rates(self.data)
 
     # --- loading -----------------------------------------------------------
@@ -336,14 +339,15 @@ def aggregate_by_month(records, pricing: PricingEngine) -> dict:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
-def render(buckets: dict) -> str:
+def render(buckets: dict, cost_unknown: bool = False) -> str:
     out = ["📊 OpenCode Usage (last 2 months):"]
     if not buckets:
         out.append("• no usage in the last 2 months")
         return "\n".join(out)
     for month in sorted(buckets):
         b = buckets[month]
-        out.append(f"• {month}: {b['tokens']:,} tokens, Cost: ${b['cost']:,.2f}")
+        cost_str = "unknown" if cost_unknown else f"${b['cost']:,.2f}"
+        out.append(f"• {month}: {b['tokens']:,} tokens, Cost: {cost_str}")
     return "\n".join(out)
 
 
@@ -380,8 +384,12 @@ def main(argv=None) -> int:
         pricing = PricingEngine()
 
     buckets = aggregate_by_month(records, pricing)
-    print(render(buckets))
-    if pricing.stale:
+    print(render(buckets, cost_unknown=pricing.empty))
+    if pricing.empty:
+        print("⚠ no pricing data (live models.dev fetch failed and no cache "
+              "available); cost shown as 'unknown'",
+              file=sys.stderr)
+    elif pricing.stale:
         print("⚠ pricing is STALE (live models.dev fetch failed; using cached prices)",
               file=sys.stderr)
     return 0
