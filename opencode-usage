@@ -155,12 +155,40 @@ def _has_rate(cost: dict) -> bool:
     return bool(cost) and any((cost.get(k) or 0) > 0 for k in RATE_KEYS)
 
 
+def _twin_provider(provider: str):
+    """Pay-as-you-go twin of a subscription/plan provider.
+
+    Recursively strips common plan/region suffixes until none match. Returns
+    the stripped form (which may not itself exist as a provider, in which case
+    callers fall through to the median cross-provider index), or None if the
+    input carried no plan/region suffix at all.
+
+      'zai-coding-plan'       -> 'zai'
+      'alibaba-token-plan-cn' -> 'alibaba-token'  (may not exist; median fallback)
+      'anthropic'             -> None
+    """
+    original = provider
+    while True:
+        for suffix in ("-coding-plan", "-token-plan", "-plan", "-cn"):
+            if provider.endswith(suffix):
+                provider = provider[:-len(suffix)]
+                break
+        else:
+            break
+    return provider if provider != original else None
+
+
 class PricingEngine:
     """USD pricing using models.dev (opencode's own pricing source).
 
     Rates are USD per 1,000,000 tokens. A model that models.dev prices at $0
-    (a flat-rate subscription plan) is resolved to the real pay-as-you-go rate
-    of the same model id under any paid provider — generically, no hardcoding.
+    (a flat-rate subscription plan) is resolved in three tiers:
+
+      1. The source provider's own rate (happy path — usually already nonzero).
+      2. The twin provider: source with plan/region suffixes stripped
+         (e.g. ``zai-coding-plan`` -> ``zai``).
+      3. The median output rate across all paid providers serving the same
+         model id. Median (not max) ignores outlier listings.
     """
 
     def __init__(self):
@@ -200,30 +228,52 @@ class PricingEngine:
 
     @staticmethod
     def _index_real_rates(data: dict) -> dict:
-        """model_id -> best non-zero cost dict across all providers.
+        """model_id -> representative non-zero cost dict across all providers.
 
-        "best" = highest output rate (tie-break: provider name) so a subscription
-        model resolves to its real paid twin regardless of how many providers
-        list the same id.
+        Picks the cost dict whose output rate is nearest the median output rate
+        across all paid providers serving that model id. Median (not max) so a
+        single outlier listing (e.g. a provider charging 5x market) doesn't
+        dominate the fallback. Tie-break: lower input rate.
         """
-        best: dict = {}
-        for prov in sorted(data):
-            for model_id, m in (data[prov].get("models") or {}).items():
+        by_model: dict = defaultdict(list)
+        for prov, pdata in data.items():
+            for model_id, m in (pdata.get("models") or {}).items():
                 cost = m.get("cost") or {}
-                if not _has_rate(cost):
-                    continue
-                cur = best.get(model_id)
-                if cur is None or (cost.get("output") or 0) > (cur.get("output") or 0):
-                    best[model_id] = cost
+                if _has_rate(cost):
+                    by_model[model_id].append(cost)
+        best: dict = {}
+        for model_id, costs in by_model.items():
+            if len(costs) == 1:
+                best[model_id] = costs[0]
+                continue
+            outputs = sorted((c.get("output") or 0) for c in costs)
+            median_out = outputs[len(outputs) // 2]
+            best[model_id] = min(
+                costs,
+                key=lambda c: (
+                    abs((c.get("output") or 0) - median_out),
+                    c.get("input") or 0,
+                ),
+            )
         return best
 
     # --- resolution --------------------------------------------------------
     def _rate(self, provider: str, model: str):
+        # 1. Source provider's own rate (happy path — usually nonzero already).
         node = self.data.get(provider) or {}
         own = (node.get("models", {}).get(model) or {}).get("cost") or {}
         if _has_rate(own):
             return own
-        # $0 / missing at source → fall back to the real rate for this model id.
+        # 2. Twin provider: pay-as-you-go sibling of a subscription plan
+        #    (e.g. zai-coding-plan -> zai). Models.dev lists both tiers with
+        #    identical model ids, so the twin is the natural real-price proxy.
+        twin = _twin_provider(provider)
+        if twin and twin != provider:
+            tnode = self.data.get(twin) or {}
+            town = (tnode.get("models", {}).get(model) or {}).get("cost") or {}
+            if _has_rate(town):
+                return town
+        # 3. Cross-provider fallback: representative median rate for this model id.
         return self._by_model.get(model)
 
     def cost(self, provider: str, model: str, tok: dict):
