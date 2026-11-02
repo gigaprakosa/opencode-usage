@@ -116,19 +116,25 @@ class OpencodeDB:
         Token fields and model identity come from the JSON `data` column via
         json_extract, so we rely on the same numbers opencode itself persisted.
         """
-        sql = """
+        tables = {row[0] for row in self.con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        modern = "session_message" in tables
+        table = "session_message" if modern else "message"
+        provider = "$.model.providerID" if modern else "$.providerID"
+        model = "$.model.id" if modern else "$.modelID"
+        role = "type = 'assistant'" if modern else "json_extract(data, '$.role') = 'assistant'"
+        sql = f"""
             SELECT
                 time_created,
-                json_extract(data, '$.providerID')                       AS provider,
-                json_extract(data, '$.modelID')                          AS model,
+                json_extract(data, '{provider}')                       AS provider,
+                json_extract(data, '{model}')                          AS model,
                 COALESCE(json_extract(data, '$.tokens.input'), 0)        AS input,
                 COALESCE(json_extract(data, '$.tokens.output'), 0)       AS output,
                 COALESCE(json_extract(data, '$.tokens.reasoning'), 0)    AS reasoning,
                 COALESCE(json_extract(data, '$.tokens.cache.read'), 0)   AS cache_read,
                 COALESCE(json_extract(data, '$.tokens.cache.write'), 0)  AS cache_write,
                 json_extract(data, '$.time.created')                     AS ts_created
-            FROM message
-            WHERE json_extract(data, '$.role') = 'assistant'
+            FROM {table}
+            WHERE {role}
         """
         for row in self.con.execute(sql):
             ts_ms = row["ts_created"] or row["time_created"]
@@ -327,12 +333,13 @@ def _window_start_ms() -> int:
 
 def aggregate_by_month(records, pricing: PricingEngine) -> dict:
     """month 'YYYY-MM' -> {'tokens': int, 'cost': float}."""
-    buckets = defaultdict(lambda: {"tokens": 0, "cost": 0.0})
+    buckets = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "unpriced": False})
     for r in records:
         b = buckets[_month(r["ts_ms"])]
         b["tokens"] += sum(r[k] for k in TOKEN_KEYS)
-        usd, _ = pricing.cost(r["provider"], r["model"], r)
+        usd, priced = pricing.cost(r["provider"], r["model"], r)
         b["cost"] += usd
+        b["unpriced"] |= not priced
     return buckets
 
 
@@ -346,7 +353,7 @@ def render(buckets: dict, cost_unknown: bool = False) -> str:
         return "\n".join(out)
     for month in sorted(buckets):
         b = buckets[month]
-        cost_str = "unknown" if cost_unknown else f"${b['cost']:,.2f}"
+        cost_str = "unknown" if cost_unknown or b.get("unpriced") else f"${b['cost']:,.2f}"
         out.append(f"• {month}: {b['tokens']:,} tokens, Cost: {cost_str}")
     return "\n".join(out)
 

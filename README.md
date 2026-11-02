@@ -110,3 +110,13 @@ still counted in tokens but contribute `$0`.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Compatibility checkpoint
+
+Run regression checks with `python3 -m unittest discover -v` and syntax checks
+with `python3 -m py_compile opencode-usage`. No typechecker is configured.
+
+OpenCode 2.x SQLite stores use `session_message` and nested model identity.
+When that table exists it is authoritative; otherwise the legacy `message`
+table is used. Costs remain API-equivalent estimates. Months with unpriced
+models display `unknown`.
