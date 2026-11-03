@@ -283,7 +283,15 @@ class PricingEngine:
             if _has_rate(town):
                 return town
         # 3. Cross-provider fallback: representative median rate for this model id.
-        return self._by_model.get(model)
+        paid = self._by_model.get(model)
+        if paid is not None:
+            return paid
+        # Explicit free rates remain usable when no paid equivalent exists.
+        if (all(type(own.get(k)) in (int, float) and own[k] == 0
+                for k in ("input", "output"))
+                and all(own.get(k, 0) == 0 for k in RATE_KEYS)):
+            return own
+        return None
 
     def cost(self, provider: str, model: str, tok: dict):
         """USD cost for one usage record. Returns (usd, priced_bool).

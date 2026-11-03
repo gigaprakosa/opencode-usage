@@ -93,7 +93,12 @@ per-token prices; the report estimates API-equivalent cost using these tiers:
    market) cannot dominate the fallback.
 
 This is fully generic: no provider or model names are hardcoded, so it works
-whether you use 2 models or 2,000. Models that exist nowhere in models.dev are
+whether you use 2 models or 2,000. After these paid-rate lookups, an explicit zero input/output rate with absent
+or zero cache rates is accepted as free pricing. This covers free models such
+as Big Pickle without replacing subscription API-equivalent estimates.
+Missing or incomplete pricing remains unknown.
+
+Models that exist nowhere in models.dev are
 still counted in tokens; their month displays `Cost: unknown`.
 
 ## Verification
